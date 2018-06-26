@@ -1,0 +1,300 @@
+---
+title: "Audiology Booth utilization"
+output:
+  html_document: default
+  html_notebook: default
+author: Alon Ben-Ari, MD ACOS Clinical Informatics, (alon.ben-ari@va.gov)
+---
+
+This is an infographic detailing the counts of slots open slots used and cancellation by clinic for NCHCS Mather Audiology booth.
+
+```{r, echo = FALSE, message=FALSE, warning=FALSE}
+library(RODBC)
+library(dplyr)
+library(reshape2)
+library(gridExtra)
+library(tibble)
+library(ggplot2)
+library(kableExtra)
+
+
+#Query for AppointmentDateTime
+
+pipeMelt <- function(df){
+  # A function to return a melted dataframe
+  function(vars){
+    return(melt(df,id.vars = vars))
+  }
+}
+#
+# A function to return a dataframe from a SQL query
+
+pipeSQL <-function(){channel <- RODBC::odbcDriverConnect(connection = 'driver={SQL Server};
+                                                         server=vhacdwdwhsql33.vha.med.va.gov;
+                                                         database=LSV;
+                                                         trusted_connection=true'); function(q){sqlQuery(channel,q)}
+}
+
+slotQuery <- function(startDate,endDate){
+paste("SELECT
+      PatternDate as ApptDate
+	  ,datepart(weekday,availability.PatternDate) as wday
+	  ,datepart(week,availability.PatternDate) as week
+    ,loc.LocationName
+      ,[SpecialAvailabilityFlagDate]
+      ,[CurrentAvailability]
+      ,[CountOutsideOfGrid]
+      ,[CountOverbook]
+      ,[CountSlots]
+      ,[CountUnused]
+	  ,(availability.CountSlots-availability.CountUnused) as CountSlotUsed
+	  
+      ,[ThreeConsecutiveFlag]
+  FROM  LSV.D05_VISN21Sites.MAC_ClinicAvailability as availability
+  inner join LSV.Dim.Location as loc
+	on loc.LocationSID = availability.LocationSID
+
+ where availability.PatternDate  between" ,startDate, "and" ,endDate,
+  "and availability.Sta3n = '612'
+    and loc.locationsid in (
+    '800177134',
+    '800114607',
+    '800039793',
+    '800177311',
+    '136453',
+    '800114549',
+    '800068524',
+    '800010060',
+    '800183867',
+    '800166748',
+    '800163714',
+    '542509',
+    '800152569',
+    '800152570',
+    '800162138',
+    '800028769',
+    '800165739',
+    '800028765',
+    '800155519',
+    '800150560',
+    '800183866',
+    '800150563',
+    '800179767',
+    '800150569',
+    '800150559',
+    '800169495',
+    '800169497'
+    )
+	and datepart(weekday,availability.PatternDate) not in (7,1) 
+order by availability.PatternDate")}
+
+
+qCancel<-function(startDate,endDate){paste("SELECT
+    convert(date,Appt.AppointmentDateTime) as ApptDate,
+  Appt.AppointmentStatus,
+  LOC.LocationName
+FROM
+  LSV.Dim.Location AS Loc
+ 
+ INNER JOIN LSV.BISL_R1VX.AR3Y_Appt_Appointment AS Appt
+    ON Loc.LocationSID = Appt.LocationSID
+WHERE
+  Appt.Sta3n = '612'
+  AND Appt.AppointmentDateTime BETWEEN ",startDate," AND ",endDate,"
+  AND LOC.locationsid in (
+    '800177134',
+    '800114607',
+    '800039793',
+    '800177311',
+    '136453',
+    '800114549',
+    '800068524',
+    '800010060',
+    '800183867',
+    '800166748',
+    '800163714',
+    '542509',
+    '800152569',
+    '800152570',
+    '800162138',
+    '800028769',
+    '800165739',
+    '800028765',
+    '800155519',
+    '800150560',
+    '800183866',
+    '800150563',
+    '800179767',
+    '800150569',
+    '800150559',
+    '800169495',
+    '800169497'
+  ) and  (Appt.AppointmentStatus = 'C' OR Appt.AppointmentStatus = 'CA' OR Appt.AppointmentStatus = 'N')
+  order by Appt.AppointmentDateTime
+  ")}
+
+
+actualVisit <-function(startDate,endDate){paste("
+  select  
+  visit.PatientSID,
+  cast(visit.VisitDateTime as date ) as ApptDate,
+  visit.CheckOutDateTime,
+  status.AppointmentStatus,
+  loc.LocationName
+  from LSV.BISL_R1VX.AR3Y_Outpat_Visit as visit
+  inner join LSV.Dim.Location as loc
+	on loc.LocationSID = visit.LocationSID and loc.Sta3n = visit.Sta3n
+  inner join LSV.Dim.AppointmentStatus as status
+	on status.AppointmentStatusSID = visit.AppointmentStatusSID and status.Sta3n = visit.Sta3n
+ where  visit.Sta3n = '612'
+ and visit.VisitDateTime between convert( datetime2,",startDate," ) and convert(datetime2,",endDate,")
+ AND  LOC.locationsid in (
+    '800177134',
+    '800114607',
+    '800039793',
+    '800177311',
+    '136453',
+    '800114549',
+    '800068524',
+    '800010060',
+    '800183867',
+    '800166748',
+    '800163714',
+    '542509',
+    '800152569',
+    '800152570',
+    '800162138',
+    '800028769',
+    '800165739',
+    '800028765',
+    '800155519',
+    '800150560',
+    '800183866',
+    '800150563',
+    '800179767',
+    '800150569',
+    '800150559',
+    '800169495',
+    '800169497'
+  )
+ and status.AppointmentStatus not in ('C','CA','N','NA')
+	  order by visit.VisitDateTime
+")}
+##############
+startDate = "'2018-01-01'"
+endDate = "'2018-06-01'"
+
+#
+# A function to return a dataframe from a SQL query
+#pipeSQL <-function(){channel <- RODBC::odbcDriverConnect(connection = 'driver={SQL Server}; server=vhacdwa01.vha.med.va.gov; database=CDWWork;  #trusted_connection=true'); function(q){sqlQuery(channel,q)} 
+#}
+#########################################################################################
+# Get available slotes
+clinicSlots <-pipeSQL()(slotQuery(startDate,endDate)) # get slots
+odbcCloseAll()
+cancel <- pipeSQL()(qCancel(startDate,endDate))%>% as.tibble() # get cancelled by Clinic
+odbcCloseAll()
+visit<-pipeSQL()(actualVisit(startDate,endDate)) # get the visits that actually happened
+odbcCloseAll()
+#
+#
+#
+subsetAudiology <-function(loc='SAC'){
+  audiologyLoc = paste('^',loc,sep = '')
+  print(audiologyLoc)
+  # this function generates a subset for each audiology clinic location
+  clinicSlots<-clinicSlots[clinicSlots$LocationName %>% sapply( function(x)  grep(audiologyLoc,x)) %>% as.numeric() %>% sapply(function(x) if (is.na(x)) FALSE else TRUE),]
+  cancel<-cancel[cancel$LocationName %>% sapply( function(x)  grep(audiologyLoc,x)) %>% as.numeric() %>% sapply(function(x) if (is.na(x)) FALSE else TRUE),]
+  visit<-visit[visit$LocationName %>% sapply( function(x)  grep(audiologyLoc,x)) %>% as.numeric() %>% sapply(function(x) if (is.na(x)) FALSE else TRUE),]
+  # slots
+  totalSlot <-clinicSlots%>% select(ApptDate,CountSlots) %>% group_by(ApptDate) %>% summarise(totalSlot= sum(CountSlots))
+  totalUsedSlot <-clinicSlots%>% select(ApptDate,CountSlotUsed) %>% group_by(ApptDate) %>% summarise(totalUsedSlot= sum(CountSlotUsed))
+ 
+  #actual visits
+  realVisit <- visit%>% select(ApptDate,AppointmentStatus) %>% group_by(ApptDate) %>% summarise(rVisit = length(AppointmentStatus))
+  df<-totalSlot %>% inner_join(totalUsedSlot) # to compute eta histogram
+  df<-df %>% left_join((realVisit))
+  df$wk <-as.numeric(sapply (df$ApptDate, function(x) strftime(as.POSIXlt(x),"%W")))
+  # cancellations
+  noShows <-cancel %>% filter(AppointmentStatus=='N')%>% group_by(ApptDate) %>% summarise(noShow = length(AppointmentStatus))
+  #clinicCancel$AppointmentStatus <-clinicCancel$AppointmentStatus %>% sapply(function(x) 1)
+  cancelByClinic <-cancel %>%filter(AppointmentStatus=='C') %>% group_by(ApptDate) %>% summarise(byClinic = length(AppointmentStatus))
+
+  clinicCancel<-cancel %>% select(ApptDate) %>% unique() %>% left_join(noShows) %>% left_join(cancelByClinic, by = 'ApptDate')
+  # add 0 instead of NAs
+  clinicCancel$byClinic<- sapply(clinicCancel$byClinic, function(x) {if (is.na(x)) 0 else x})
+  clinicCancel$noShow<- sapply(clinicCancel$noShow, function(x) {if (is.na(x)) 0 else x})
+  #
+  data <-df %>% left_join(clinicCancel) %>% left_join(realVisit) #%>% select(-wk) 
+
+  return(list(data=data,loc = loc))
+# 
+}
+  #meltData<-pipeMelt(data)("ApptDate")
+  #metlData <- as.numeric(sapply (meltData$ApptDate, function(x) strftime(as.POSIXlt(x),"%W")))
+
+audi <-subsetAudiology('SAC') # NSAC, CHICO etc...
+
+#
+# plotting
+# Bar graph.
+getBarGraph <-function(w){
+ p1 <- pipeMelt(filter(audi$data,wk==w))('ApptDate') %>% filter(variable !='wk')  %>%  ggplot(aes(x=ApptDate,y=value, fill = variable))+
+   geom_bar(stat = "identity",position="dodge")+
+   ggtitle("Counts")  +theme(axis.text.x = element_text(angle=45,hjust=1))+
+  scale_y_continuous(breaks = seq(0, max(audi$data$totalSlot), 1))
+  return(p1)
+}
+
+#getEta<-function(w){
+#
+#  audi$data$eta <-audi$data$rVisit/7.0  %>% sapply(function(x) if(is.na(x)) 0 else x)
+#   
+#  p2 <-filter(audi$data,wk==w) %>% ggplot(aes(x=ApptDate,y=eta))+geom_point()+
+#     ggtitle("Utilization")  + theme(axis.text.x = element_text(angle=45,hjust=1))+
+#    #scale_y_continuous(breaks = c(0.0,0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1.0,1.1))+
+#    ylab(expression(Delta))
+#  return(p2) 
+#}
+
+# plot All
+for (w in unique(audi$data$wk)){
+  grid.arrange(getBarGraph(w),ncol=1)
+}
+
+```
+
+```{r, echo=FALSE, fig.cap = "Distribution of clinic cancellations for the period"}
+print(audi$data %>% select(byClinic) %>% ggplot(aes(x = byClinic))+geom_histogram(fill = '#5F90AA'))
+
+```
+
+
+```{r, echo=FALSE, fig.cap = "Distribution of total Slots for the period"}
+audi$data %>% select(totalSlot) %>% ggplot(aes(x = totalSlot))+geom_histogram(fill = '#FF90AB', binwidth = 0.5, bins = 8)+ggtitle(audi$loc)#+scale_x_continuous(breaks = seq(0,11,1)) +ggtitle(audi$loc))
+
+
+```
+
+```{r, echo=FALSE, fig.cap = "Distribution of total used  Slots for the period"}
+
+audi$data %>% select(rVisit) %>%  ggplot(aes(x = rVisit))+geom_histogram(fill = '#009B12', binwidth = 0.5)+ggtitle(audi$loc)#+scale_x_continuous(breaks = seq(min(audi$data$rVisit), max(audi$data$rVisit))) #scale_x_continuous(breaks = seq(0,11,1)) 
+      
+      
+      
+
+```
+
+
+
+```{r,echo=FALSE, fig.cap = 'Cumulative density function of efficiency for use of Audiology booth for the period computed from real visits.'}
+counts = 1:dim(table(audi$data$rVisit))
+
+dframe = data.frame(visitNumber = counts,prob = cumsum(table(audi$data$rVisit)/sum(table(audi$data$rVisit))))
+
+print(dframe %>%ggplot(aes(x=visitNumber,y = prob)) + geom_point() + ggtitle(audi$loc))
+audi$data$totalSlot %>% quantile(c(0.25,0.5,0.75),na.rm = TRUE) %>% kable(col.name = 'totalSlots')
+audi$data$totalUsedSlot %>% quantile(c(0.25,0.5,0.75),na.rm = TRUE) %>% kable(col.name = 'usedSlots')
+audi$data$rVisit %>% quantile(c(0.25,0.5,0.75),na.rm = TRUE) %>% kable(col.name = 'rVisit')
+#cbind(slotsQuantile,totalUsedlotsQuantiles,visitQuantiles) %>% kable()
+```
